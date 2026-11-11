@@ -21,7 +21,7 @@ export function Provider({children}){
  async function remove(collection,id){if(queueRef.current.some(q=>q.collection===collection&&q.id===id))throw new Error('هذا العنصر محفوظ على جهازك ولم يُرسل بعد — انتظر المزامنة');await api('/'+collection+'/'+id,{method:'DELETE'});await refresh()}
  async function auth(mode,body){const u=await api('/auth/'+mode,{method:'POST',body});setUser(u);setError('')}
  async function logout(){if(queueRef.current.length&&!confirm('توجد عمليات محفوظة على الجهاز لم تُرسل بعد. تسجيل الخروج؟'))return;await api('/auth/logout',{method:'POST'});localStorage.removeItem('daftari:identity');setUser(null)}
- async function saveSettings(settings){const saved=await api('/settings',{method:'PUT',body:settings});saveData({...dataRef.current,settings:saved})}
+ async function saveSettings(settings){const saved=await api('/settings',{method:'PUT',body:settings});saveData({...dataRef.current,settings:saved});return saved}
  return <Context.Provider value={{...data,user,ready,online,queue,error,setError,auth,logout,setUser,mutate,remove,refresh,sync,lastSync,saveSettings,totals:aggregate(data.records)}}>{children}</Context.Provider>
 }
 export const useApp=()=>useContext(Context);

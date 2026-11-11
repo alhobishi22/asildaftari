@@ -1,5 +1,25 @@
 # دفتري
 
+دفتر عملاء عربي مستقل: ديون وتسديدات بعملات متعددة، عمولات USDT، سحوبات مستقلة، كشوف PDF عربية ونسخ احتياطية. لا يتصل بالتطبيق الأصلي أو ببيانات مستخدميه.
+
+## التشغيل والنشر
+
+للتشغيل المحلي: أنشئ قاعدة PostgreSQL باسم `daftari`، ثبّت متطلبات `backend/requirements.txt` في venv، انسخ `.env.example` إلى `.env` واضبط قاعدة البيانات و`JWT_SECRET` العشوائي (32 حرفًا على الأقل). ثم:
+
+```sh
+npm --prefix frontend install
+npm --prefix frontend run build
+.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8080
+```
+
+افتح http://localhost:8080 وأنشئ حسابًا. خطوات إنشاء venv والاختبارات مفصّلة أدناه.
+
+النشر المقصود: http://217.216.111.54:8097/، في `/opt/daftari` بخدمة systemd باسم `daftari`. لا يتغيّر nginx أو أي موقع قائم. بعد حفظ التغييرات في git شغّل `bash deploy.sh` بمفتاح SSH أو `SSHPASS` عبر بيئة آمنة. يُبنى frontend محليًا، ويُرفع آخر commit مع `dist` والخطوط؛ لا يلزم Node أو git على الخادم. أول تشغيل ينشئ مستخدم نظام وقاعدة ودور PostgreSQL مستقلين باسم `daftari`، ويرفض إعادة استخدام قاعدة/دور موجودين دون ملف إعدادات للتطبيق. التحديثات تحفظ `/opt/daftari/.env` كما هو وتعيد تشغيل هذه الخدمة فقط.
+
+كلمة مرور قاعدة البيانات وJWT_SECRET يولَّدان على الخادم ويُحفظان في `.env` بصلاحية 600 فقط. `COOKIE_SECURE=false` مطلوب على HTTP، وزر Google مخفي ما دام `GOOGLE_CLIENT_ID` فارغًا. **عنوان IP عبر HTTP لا يتيح Service Worker/PWA؛ إعادة فتح التطبيق دون شبكة تتطلب HTTPS أو localhost. يُنصح بإضافة نطاق وTLS قبل استخدام بيانات حساسة.** استعادة كلمة المرور واجهة تجريبية بلا إرسال بريد حاليًا. البيانات المحلية غير مشفّرة؛ سجّل الخروج على الأجهزة المشتركة.
+
+ملفات `.env` و`compare/` و`node_modules/` و`dist/` وملفات Python المؤقتة مستثناة من git.
+
 Standalone Arabic RTL client ledger. All financial data belongs to the authenticated local user; this implementation does not contact the original app or its data services.
 
 ## Run locally
