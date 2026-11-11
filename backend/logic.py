@@ -100,7 +100,7 @@ def statement(records, start, end, currency='ALL'):
 
 
 def aggregate(records):
-    result = dict(byClient={}, currencies={}, usd=0, commission=0, count=0, debts=0, payments=0, monthly={})
+    result = dict(byClient={}, currencies={}, currencyCounts={}, usd=0, commission=0, count=0, debts=0, payments=0, monthly={})
     for row in records:
         if row.get('voided'):
             continue
@@ -108,6 +108,7 @@ def aggregate(records):
         for target in [client['currencies'], result['currencies']]:
             target[row['currency']] = rounded(target.get(row['currency'], 0) + row['signedAmount'], 4)
         client['usd'] = rounded(client['usd'] + row['signedUsd'], 4)
+        result['currencyCounts'][row['currency']] = result['currencyCounts'].get(row['currency'], 0) + 1
         result['usd'] += row['signedUsd']
         result['commission'] += row['commissionUsd']
         result['debts' if row['type'] == 'debt' else 'payments'] += row['usdEquivalent']
