@@ -8,3 +8,4 @@ compare/
 *.log
 *.pyc
 .vercel/
+.env.local
