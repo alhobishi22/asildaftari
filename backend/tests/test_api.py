@@ -42,6 +42,32 @@ def test_auth_errors_cookie_bearer_and_reset(app):
     assert c.post('/api/clients', headers={'Origin': 'https://evil.example'}, json={'name': 'x'}).status_code == 403
 
 
+def test_https_cookie_and_plain_http_cookie(app, monkeypatch):
+    application, http = app
+    monkeypatch.setenv('COOKIE_SECURE', 'false')
+    assert '; Secure' not in signup(http, 'plain-http').headers['set-cookie']
+    with TestClient(application, base_url='https://app.example') as https:
+        assert '; Secure' in signup(https, 'secure-https').headers['set-cookie']
+        assert https.get('/api/auth/me').status_code == 200
+        https.post('/api/auth/logout')
+        response = https.post('/api/auth/login', json={'email': 'secure-https@example.com', 'password': 'local-test-password'})
+        assert '; Secure' in response.headers['set-cookie']
+
+
+def test_idempotent_initialization_without_lifespan(app):
+    from backend.database import initialize_database
+
+    application, _ = app
+    initialize_database(application.state.engine)
+    initialize_database(application.state.engine)
+    cold = create_app(str(application.state.engine.url), 'test-only-signing-key-at-least-32-characters')
+    client = TestClient(cold)
+    assert signup(client, 'cold-start').status_code == 200
+    assert client.get('/api/auth/me').status_code == 200
+    client.close()
+    cold.state.engine.dispose()
+
+
 def test_crud_isolation_idempotency_archive_void_and_cascade(app):
     application, a = app
     signup(a)

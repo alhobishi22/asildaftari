@@ -28,8 +28,7 @@ if not ENV.exists():
         raise SystemExit('Refusing to reuse existing database/role without a daftari .env: ' + conflicts)
 
 run('apt-get', 'update', '-qq')
-run('apt-get', 'install', '-y', '--no-install-recommends', 'python3-venv', 'libpango-1.0-0',
-    'libpangoft2-1.0-0', 'libharfbuzz-subset0', 'libgdk-pixbuf-2.0-0', 'libffi8', 'shared-mime-info')
+run('apt-get', 'install', '-y', '--no-install-recommends', 'python3-venv')
 try:
     account = pwd.getpwnam('daftari')
 except KeyError:

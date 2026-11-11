@@ -24,7 +24,7 @@ Standalone Arabic RTL client ledger. All financial data belongs to the authentic
 
 ## Run locally
 
-Requirements: Python 3.10+, Node 20+, PostgreSQL, and the native Pango/HarfBuzz libraries needed by WeasyPrint.
+Requirements: Python 3.10+ (Python 3.12 on Vercel), Node 20+, and PostgreSQL. PDFs use fpdf2 + uharfbuzz wheels and bundled Arabic fonts; no Pango/WeasyPrint system packages are required.
 
 ```sh
 createdb daftari
@@ -43,6 +43,7 @@ Open http://localhost:8080 and create a new account. Tables are created on start
 ## Tests
 
 ```sh
+.venv/bin/pip install -r backend/requirements-dev.txt
 .venv/bin/python -m pytest backend/tests -q
 npm --prefix frontend test
 npm --prefix frontend run build
@@ -52,7 +53,7 @@ Backend integration tests recreate tables **only in the dedicated `daftari_test`
 
 ## Configuration and behavior
 
-- `.env` supplies `DATABASE_URL`, `JWT_SECRET`, `COOKIE_SECURE`, `GOOGLE_CLIENT_ID`, and optional SMTP variables. Set `COOKIE_SECURE=true` behind HTTPS. Google sign-in is hidden unless configured. Password reset currently returns a success response but does not send mail.
+- `.env` supplies `DATABASE_URL`, `JWT_SECRET`, `COOKIE_SECURE`, `GOOGLE_CLIENT_ID`, and optional SMTP variables. HTTPS requests automatically receive Secure cookies; `COOKIE_SECURE=true` can additionally enforce Secure cookies behind a trusted HTTPS proxy. Leave it false for the plain HTTP IP deployment. Google sign-in is hidden unless configured. Password reset currently returns a success response but does not send mail.
 - Passwords use bcrypt. Authentication uses a same-site httpOnly JWT cookie; Bearer JWTs are also accepted. Tenant-owned primary/foreign keys include `user_id`.
 - Exchange rates and commissions are fixed at entry; the API independently computes persisted monetary fields. Automatic commissions apply only to USDT, including the documented legacy fixed-fee fallback. The documented blank-start-date statement edge is retained.
 - Records and withdrawals can be created/edited offline. Each account has its own localStorage cache and durable outbox, capped at 300 distinct rows. Reconnection and periodic retry replay the outbox using stable UUIDs. Rejected rows remain visible and can be edited or explicitly retried from Settings. Clients, settings, backups and server PDFs require connectivity.
@@ -61,3 +62,38 @@ Backend integration tests recreate tables **only in the dedicated `daftari_test`
 - Backup restore is additive: existing rows/settings are kept and only missing IDs are inserted. Existing transaction rates/commissions are preserved. PDFs use bundled open-license Arabic fonts.
 
 `compare/`, `.env`, build output and local caches are deliberately excluded from git. See the local `compare/REPORT.md` for screenshot pairs and end-to-end evidence.
+
+## Vercel (prepared, not deployed)
+
+استورد المستودع وحدّد **Root Directory = جذر المستودع** (وليس frontend). يضبط `vercel.json` بناء Vite، والملفات الثابتة، ودالة Python في `api/index.py` لجميع `/api/*`، ثم SPA fallback لبقية الصفحات. متطلبات Python في `requirements.txt` الجذري؛ الخطوط مضمّنة في الدالة. لا يحتاج PDF إلى حزم نظام.
+
+Use the repository root, Python 3.12, and Node 20+. The checked-in configuration installs/builds the frontend and serves its static output separately from the API function. Do not choose the FastAPI framework preset, which would route the entire site through Python; the configuration explicitly selects Vite. No Vercel deployment has been performed.
+
+Set these project environment variables for each intended environment (Production/Preview/Development):
+
+| Variable | Value / purpose |
+| --- | --- |
+| `DATABASE_URL` | Required. Neon PostgreSQL URL ending in `?sslmode=require` (preserve any other Neon parameters). `postgres://`, `postgresql://`, and `postgresql+psycopg://` are accepted. Prefer Neon's pooled endpoint. |
+| `JWT_SECRET` | Required. Independently generated random secret, at least 32 characters; keep stable across function instances. |
+| `DB_POOL` | Set `null` for serverless. `VERCEL=1` (automatically supplied by Vercel) also selects SQLAlchemy NullPool. |
+| `GOOGLE_CLIENT_ID` | Optional; leave empty to hide Google sign-in. If enabled, authorize the Vercel domain with Google. |
+| `COOKIE_SECURE` | Optional, `true` on Vercel. HTTPS is detected automatically; keep `false` on the existing HTTP IP deployment. |
+
+There are **no `VITE_*` API URL variables**: the frontend uses same-origin `/api`. No SMTP variables are needed: password reset is still a no-mail stub. Vercel supplies `VERCEL` itself. Do not reuse production Neon credentials for disposable preview deployments unless shared data is intentional; use separate Neon branches/databases instead.
+
+Initialize the intended database once from a local shell with its `DATABASE_URL` securely exported (never put credentials in command history):
+
+```sh
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m backend.init_db
+```
+
+The command prints `DATABASE_INIT_OK`. Startup also initializes idempotently, with a PostgreSQL transaction advisory lock to serialize concurrent cold starts. The first DB request initializes too when an ASGI adapter does not invoke lifespan. This is additive table creation, not a schema migration system. The Neon role needs table-creation permissions for initialization; all tenant data remains scoped to the signed-in user.
+
+Local function simulation, after building the frontend:
+
+```sh
+DB_POOL=null VERCEL=1 .venv/bin/uvicorn api.index:app --host 127.0.0.1 --port 8081
+```
+
+This exercises the same ASGI entrypoint and pip-only renderer, but is not a hosted Vercel routing/deployment test. Keep the existing IP service using `backend.main:app` and `deploy.sh`; its environment/database are independent and preserved. Serverless has no durable local disk: app data belongs in PostgreSQL and PDF bytes are generated in memory. Vercel request/runtime/response-size limits still apply to exceptionally large backups or PDFs; use the IP service for exports exceeding the platform's limits.

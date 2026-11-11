@@ -1,21 +1,32 @@
 from copy import deepcopy
+
+import pymupdf
 import pytest
+
 from backend import pdf
 from backend.logic import DEFAULTS, aggregate, calculate, statement
 
 
 @pytest.fixture
-def markup(monkeypatch):
+def documents(monkeypatch):
     captured = []
+    original = pdf.Document
 
-    class Document:
-        def __init__(self, string):
-            captured.append(string)
+    class Document(original):
+        def __init__(self, settings, title):
+            self.calls = []
+            super().__init__(settings, title)
+            captured.append(self)
 
-        def write_pdf(self):
-            return b'%PDF-test'
+        def kpis(self, values):
+            self.calls.append(('kpis', values))
+            return super().kpis(values)
 
-    monkeypatch.setattr(pdf, 'HTML', Document)
+        def data_table(self, headers, rows, **options):
+            self.calls.append(('table', headers, rows, options))
+            return super().data_table(headers, rows, **options)
+
+    monkeypatch.setattr(pdf, 'Document', Document)
     return captured
 
 
@@ -24,63 +35,74 @@ def row(kind='debt', currency='USDT', amount=20, voided=False):
             'type': kind, 'date': '2026-11-11', 'time': '12:00', 'note': '', 'voided': voided}
 
 
-def test_report_counts_exclude_voided_rows_and_keep_zero_balances(markup):
+def parsed(content):
+    assert content.startswith(b'%PDF')
+    return pymupdf.open(stream=content, filetype='pdf')
+
+
+def test_report_counts_exclude_voided_rows_and_keep_zero_balances(documents):
     rows = [row(), row('payment'), row(currency='USD'), row(voided=True)]
     totals = aggregate(rows)
     assert totals['currencyCounts'] == {'USDT': 2, 'USD': 1}
-    pdf.report(DEFAULTS, [{'id': 'one', 'name': 'محمد'}], totals)
-    html = markup[0]
-    assert '<th scope="col">عدد العمليات</th>' in html
-    assert '<td>USDT</td><td>0 ₮</td><td>2</td>' in html
-    assert '<td>USD</td><td>20 $</td><td>1</td>' in html
-    assert html.count('class="kpi"') == 4
-    assert 'Page " counter(page) " of " counter(pages)' in html
-    assert html.index('class="page-header"><span>دفتري') < html.index('صدر في')
+    doc = parsed(pdf.report(DEFAULTS, [{'id': 'one', 'name': 'محمد'}], totals))
+    kpis, currencies, clients = documents[0].calls
+    assert len(kpis[1]) == 4
+    assert currencies[1] == ['العملة', 'الصافي', 'عدد العمليات']
+    assert currencies[2] == [['USDT', '0 ₮', 2], ['USD', '20 $', 1]]
+    assert clients[2] == [['محمد', 'عليه', '20 $']]
+    assert 'Page 1 of 1' in doc[0].get_text()
+    assert len(doc[0].get_fonts()) >= 2
 
 
-def test_empty_report_retains_table_headers_and_escapes_identity(markup):
+def test_empty_report_keeps_headers_and_literal_identity(documents):
     settings = {**deepcopy(DEFAULTS), 'shopName': '<script>دفتر & شركة</script>'}
     assert aggregate([])['currencyCounts'] == {}
-    pdf.report(settings, [], aggregate([]))
-    html = markup[0]
-    assert '<tbody></tbody>' in html
-    assert '<script>' not in html
-    assert '&lt;script&gt;دفتر &amp; شركة&lt;/script&gt;' in html
-    assert html.count('class="kpi"') == 4
+    doc = parsed(pdf.report(settings, [], aggregate([])))
+    assert doc.metadata['title'] == 'تقرير عام — ' + settings['shopName']
+    assert all(not call[2] for call in documents[0].calls if call[0] == 'table')
+    assert len(documents[0].calls[0][1]) == 4
 
 
-def test_statement_totals_signed_amounts_zero_commission_and_metadata(markup):
-    records = [row(), row('payment', amount=5)]
-    data = statement(records, '2026-11-01', '2026-11-30')
-    pdf.client_statement(DEFAULTS, {'name': 'محمد', 'phone': '770000000'}, data,
-                         '2026-11-01', '2026-11-30', 'ALL')
-    html = markup[0]
-    assert '<td>+20 USDT</td>' in html and '<td>−5 USDT</td>' in html
-    assert '<td>—</td>' in html
-    assert '<tfoot><tr><td colspan="2"></td><td colspan="5">الرصيد الختامي</td>' in html
-    assert '<td>15 $</td></tr></tfoot>' in html
-    assert ' · الهاتف: 770000000</p>' in html
-    assert html.count('class="kpi"') == 4
+def test_statement_totals_signed_amounts_zero_commission_and_metadata(documents):
+    data = statement([row(), row('payment', amount=5)], '2026-11-01', '2026-11-30')
+    doc = parsed(pdf.client_statement(DEFAULTS, {'name': 'محمد', 'phone': '770000000'}, data,
+                                      '2026-11-01', '2026-11-30', 'ALL'))
+    kpis, table = documents[0].calls
+    assert len(kpis[1]) == 4
+    assert table[2][0][3] == '+20 USDT'
+    assert table[2][1][3] == '−5 USDT'
+    assert table[2][0][5] == '—'
+    assert table[3] == {'statement': True, 'closing': '15 $'}
+    assert '770000000' in doc[0].get_text()
+    assert '2026-11-01' in doc[0].get_text()
 
 
-def test_empty_statement_retains_eight_columns_and_closing_balance(markup):
+def test_empty_statement_retains_eight_columns_and_closing_balance(documents):
     data = statement([], '2026-11-01', '2026-11-30', 'SAR')
-    pdf.client_statement(DEFAULTS, {'name': '<عميل>', 'phone': ''}, data, '', '', 'SAR')
-    html = markup[0]
-    assert '<td>—</td><td>لا حركات في هذه الفترة</td>' in html
-    assert '<td>0 ر.س</td></tr></tfoot>' in html
-    assert 'الهاتف:' not in html
-    assert '&lt;عميل&gt;' in html and '<عميل>' not in html
+    doc = parsed(pdf.client_statement(DEFAULTS, {'name': '<عميل>', 'phone': ''}, data, '', '', 'SAR'))
+    table = documents[0].calls[1]
+    assert len(table[1]) == 8
+    assert table[2] == [['—', 'لا حركات في هذه الفترة', '', '', '', '', '', '0 ر.س']]
+    assert table[3]['closing'] == '0 ر.س'
+    assert doc.metadata['title'] == 'كشف حساب — <عميل>'
+
+
+def test_multipage_statement_repeats_headers_and_counts():
+    records = [{**row(), 'note': 'تفاصيل حوالة العميل الطويلة ' * 3} for _ in range(90)]
+    data = statement(records, '', '')
+    doc = parsed(pdf.client_statement(DEFAULTS, {'name': 'عميل'}, data, '', '', 'ALL'))
+    assert len(doc) > 2
+    for index, page in enumerate(doc):
+        text = page.get_text()
+        assert f'Page {index + 1} of {len(doc)}' in text
+        assert 'USDT' in text
+        assert '12:00' in text
 
 
 def test_rendering_failure_is_not_swallowed(monkeypatch):
-    class BrokenDocument:
-        def __init__(self, string):
-            pass
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('PDF renderer unavailable')
 
-        def write_pdf(self):
-            raise RuntimeError('PDF renderer unavailable')
-
-    monkeypatch.setattr(pdf, 'HTML', BrokenDocument)
+    monkeypatch.setattr(pdf.Document, 'output', unavailable)
     with pytest.raises(RuntimeError, match='PDF renderer unavailable'):
         pdf.report(DEFAULTS, [], aggregate([]))

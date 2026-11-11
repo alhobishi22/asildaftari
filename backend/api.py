@@ -4,6 +4,7 @@ from copy import deepcopy
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
+from threading import Lock
 from uuid import uuid4
 from urllib.parse import urlsplit
 
@@ -14,12 +15,13 @@ from email_validator import validate_email, EmailNotValidError
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, Body
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import Base, User, Client, Record, Withdrawal, Settings, serialize, camel
 from .logic import DEFAULTS, calculate, automatic_commission, exchange_rate, aggregate, statement, number, rounded
+from .database import initialize_database, make_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / '.env')
@@ -27,14 +29,23 @@ COLLECTIONS = {'clients': Client, 'records': Record, 'withdrawals': Withdrawal}
 
 
 def create_app(database_url=None, secret=None):
-    engine = create_engine(database_url or os.environ.get('DATABASE_URL', 'postgresql+psycopg:///daftari'), pool_pre_ping=True)
+    engine = make_engine(database_url)
+    initialization_lock = Lock()
+    initialized = False
+
+    def ensure_database():
+        nonlocal initialized
+        with initialization_lock:
+            if not initialized:
+                initialize_database(engine)
+                initialized = True
     secret = secret or os.environ.get('JWT_SECRET')
     if not secret or len(secret) < 32:
         raise RuntimeError('JWT_SECRET must contain at least 32 characters')
 
     @asynccontextmanager
     async def lifespan(app):
-        Base.metadata.create_all(engine)
+        ensure_database()
         yield
 
     app = FastAPI(title='دفتري', lifespan=lifespan)
@@ -58,6 +69,7 @@ def create_app(database_url=None, secret=None):
         return JSONResponse({'detail': str(exc)}, status_code=422)
 
     def db():
+        ensure_database()
         with Session(engine) as session:
             yield session
 
@@ -73,9 +85,9 @@ def create_app(database_url=None, secret=None):
             raise HTTPException(401, 'يرجى تسجيل الدخول')
         return user
 
-    def login_cookie(response, user):
+    def login_cookie(response, user, request):
         token = jwt.encode({'sub': user.id, 'iat': datetime.now(timezone.utc), 'exp': datetime.now(timezone.utc) + timedelta(days=7)}, secret, algorithm='HS256')
-        response.set_cookie('daftari_session', token, httponly=True, samesite='lax', secure=os.getenv('COOKIE_SECURE', 'false').lower() == 'true', max_age=604800, path='/')
+        response.set_cookie('daftari_session', token, httponly=True, samesite='lax', secure=request.url.scheme == 'https' or os.getenv('COOKIE_SECURE', 'false').lower() == 'true', max_age=604800, path='/')
 
     def config(session, user):
         row = session.get(Settings, (user.id, 'main'))
@@ -99,7 +111,7 @@ def create_app(database_url=None, secret=None):
         return {'googleClientId': os.getenv('GOOGLE_CLIENT_ID', '')}
 
     @app.post('/api/auth/signup')
-    def signup(response: Response, body: dict = Body(...), session: Session = Depends(db)):
+    def signup(request: Request, response: Response, body: dict = Body(...), session: Session = Depends(db)):
         email, password = credentials(body)
         if len(password) < 6:
             raise HTTPException(422, 'كلمة المرور يجب أن تكون 6 أحرف على الأقل')
@@ -111,20 +123,20 @@ def create_app(database_url=None, secret=None):
             session.rollback()
             raise HTTPException(409, 'البريد الإلكتروني مستخدم بالفعل')
         config(session, user)
-        login_cookie(response, user)
+        login_cookie(response, user, request)
         return serialize(user)
 
     @app.post('/api/auth/login')
-    def login(response: Response, body: dict = Body(...), session: Session = Depends(db)):
+    def login(request: Request, response: Response, body: dict = Body(...), session: Session = Depends(db)):
         email, password = credentials(body)
         user = session.scalar(select(User).where(User.email == email))
         if not user or not user.password_hash or not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
             raise HTTPException(401, 'البريد الإلكتروني أو كلمة المرور غير صحيحة')
-        login_cookie(response, user)
+        login_cookie(response, user, request)
         return serialize(user)
 
     @app.post('/api/auth/google')
-    def google(response: Response, body: dict = Body(...), session: Session = Depends(db)):
+    def google(request: Request, response: Response, body: dict = Body(...), session: Session = Depends(db)):
         audience = os.getenv('GOOGLE_CLIENT_ID')
         if not audience:
             raise HTTPException(400, 'تسجيل الدخول عبر Google غير مفعّل')
@@ -148,7 +160,7 @@ def create_app(database_url=None, secret=None):
             user.google_sub = info['sub']
             session.commit()
         config(session, user)
-        login_cookie(response, user)
+        login_cookie(response, user, request)
         return serialize(user)
 
     @app.post('/api/auth/reset')
